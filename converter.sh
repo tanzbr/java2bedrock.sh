@@ -173,53 +173,47 @@ COLUMNS=$COLUMNS-1 curl --no-styled-output -#L -o scratch_files/item_texture.jso
 echo
 printf "${C_CLOSE}"
 
-# setup our initial config by iterating over all json files in the block and item folders
-# technically we only need to iterate over actual item models that contain overrides, but the constraints of bash would likely make such an approach less efficent 
 status_message process "Iterating through all vanilla associated model JSONs to generate initial predicate config\nOn a large pack, this may take some time...\n"
 
 jq --slurpfile item_texture scratch_files/item_texture.json --slurpfile item_mappings scratch_files/item_mappings.json -n '
-[inputs | {(input_filename | sub("(.+)/(?<itemname>.*?).json"; .itemname)): .overrides?[]?}] |
+[inputs | {(input_filename | sub("(.+)/(?<itemname>.*?).json"; .itemname)): .model.entries?[]?}] |
 
+# Functions
 def maxdur($input):
-($item_mappings[] |
-[to_entries | map(.key as $key | .value | .java_identifer = $key) | .[] | select(.max_damage)] 
-| map({(.java_identifer | split(":") | .[1]): (.max_damage)}) 
-| add
-| .[$input] // 1)
-;
+  ($item_mappings[] |
+    [to_entries | map(.key as $key | .value | .java_identifer = $key) | .[] | select(.max_damage)]
+    | map({(.java_identifer | split(":") | .[1]): (.max_damage)})
+    | add
+    | .[$input] // 1);
 
 def bedrocktexture($input):
-($item_texture[] | .[$input] // {"icon": "camera", "frame": 0})
-;
+  ($item_texture[] | .[$input] // {"icon": "camera", "frame": 0});
 
 def namespace:
-if contains(":") then sub("\\:(.+)"; "") else "minecraft" end
-;
+  if contains(":") then sub("\\:(.+)"; "") else "minecraft" end;
 
-[.[] | to_entries | map( select((.value.predicate.damage != null) or (.value.predicate.damaged != null)  or (.value.predicate.custom_model_data != null)) |
-      (if .value.predicate.damage then (.value.predicate.damage * maxdur(.key) | ceil) else null end) as $damage
-    | (if .value.predicate.damaged == 0 then true else null end) as $unbreakable
-    | (if .value.predicate.custom_model_data then .value.predicate.custom_model_data else null end) as $custom_model_data |
+# Processing logic
+[.[] | to_entries | map( select((.value.threshold != null)) |
+      .value.threshold as $threshold |
   {
     "item": .key,
     "bedrock_icon": bedrocktexture(.key),
-    "nbt": ({
-      "Damage": $damage,
-      "Unbreakable": $unbreakable,
-      "CustomModelData": $custom_model_data
-    }),
-    "path": ("./assets/" + (.value.model | namespace) + "/models/" + (.value.model | sub("(.*?)\\:"; "")) + ".json"),
-    "namespace": (.value.model | namespace),
-    "model_path": ((.value.model | sub("(.*?)\\:"; "")) | split("/")[:-1] | map(. + "/") | add[:-1] // ""),
-    "model_name": ((.value.model | sub("(.*?)\\:"; "")) | split("/")[-1]),
+    "nbt": {"CustomModelData": $threshold},
+    "path": ("./assets/" + (.value.model.model | namespace) + "/models/" + (.value.model.model | sub("(.*?)\\:"; "")) + ".json"),
+    "namespace": (.value.model.model | namespace),
+    "model_path": ((.value.model.model | sub("(.*?)\\:"; "")) | split("/")[:-1] | map(. + "/") | add[:-1] // ""),
+    "model_name": ((.value.model.model | sub("(.*?)\\:"; "")) | split("/")[-1]),
     "generated": false
-
-}) | .[]]
+  }) | .[]]
 | walk(if type == "object" then with_entries(select(.value != null)) else . end)
 | to_entries | map( ((.value.geyserID = "gmdl_\(1+.key)") | .value))
 | INDEX(.geyserID)
 
-' ./assets/minecraft/models/item/*.json > config.json || { status_message error "Invalid JSON exists in block or item folder! See above log."; exit 1; }
+' ./assets/minecraft/items/*.json > config.json || {
+  status_message error "Invalid JSON exists in block or item folder! See above log.";
+  exit 1;
+}
+
 status_message completion "Initial predicate config generated"
 
 # get a bash array of all model json files in our resource pack
