@@ -48,6 +48,7 @@ jobs:
           echo "ATTACHABLE_MATERIAL=$(jq -r '.attachable_material' inputs.json)" >> $GITHUB_OUTPUT
           echo "ARCHIVE_SCRATCH=$(jq -r '.archive_scratch' inputs.json)" >> $GITHUB_OUTPUT
           echo "RENAME_MODEL_FILES=$(jq -r '.rename_model_files' inputs.json)" >> $GITHUB_OUTPUT
+
   convert-pack:
     runs-on: ubuntu-latest
     needs: get-pack-info
@@ -70,9 +71,14 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: 17
+      - name: Fix APT sources and update
+        run: |
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|' /etc/apt/sources.list
+          sudo apt-get clean
+          sudo apt-get update
       - name: Install dependencies
         run: |
-          sudo apt-get install -y moreutils zip imagemagick
+          sudo apt-get install -y --fix-missing moreutils zip imagemagick ghostscript
           yarn global add spritesheet-js
       - name: Convert Pack
         id: convert-pack
@@ -108,6 +114,7 @@ jobs:
             staging/target/geyser_mappings.json
             staging/target/scratch_files.zip
             staging/config.json
+
   post-result:
     runs-on: ubuntu-latest
     needs: convert-pack
@@ -134,6 +141,7 @@ jobs:
         uses: peter-evans/close-issue@v2
         with:
           issue-number: ${{ github.event.issue.number }}
+
   conversion-failed:
     runs-on: ubuntu-latest
     needs: [get-pack-info, convert-pack, post-result]
@@ -155,7 +163,7 @@ jobs:
               - Convert Pack: *${{ needs.convert-pack.result }}*
               - Post Result: *${{ needs.post-result.result }}*
 
-            If you believe this is an issue with the converter. please open a bug report. This issue will be closed automatically.
+            If you believe this is an issue with the converter, please open a bug report. This issue will be closed automatically.
 
             [1]: https://github.com/Kas-tle/java2bedrock.sh/actions/runs/${{ github.run_id}}
           reactions: 'x'
