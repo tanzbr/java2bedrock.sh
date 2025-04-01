@@ -178,115 +178,73 @@ status_message process "Iterating through all vanilla associated model JSONs to 
 jq --slurpfile item_texture scratch_files/item_texture.json \
    --slurpfile item_mappings scratch_files/item_mappings.json -n '
 ############################################
-# 1) find_entries - recursivo para varrer
-#    qualquer estrutura com .threshold + .model.model
+# 1) Filtrar apenas arquivos no formato
+#    \"minecraft:range_dispatch\" com \"minecraft:custom_model_data\"
 ############################################
-def find_entries(obj):
-  if obj == null then
-    []
-  else
-    if (obj | type) == "array" then
-      reduce obj[] as $elem ([]; . + find_entries($elem))
-    elif (obj | type) == "object" then
-      (
-        # Se o objeto tiver threshold e model.model,
-        # capturamos esse par {threshold, modelpath}
-        if (obj.threshold? != null and obj.model?.model? != null) then
-          [ { "threshold": obj.threshold, "modelpath": obj.model.model } ]
-        else
-          []
-        end
+[
+  inputs
+  | select(
+      .model?.type? == "minecraft:range_dispatch"
+      and .model?.property? == "minecraft:custom_model_data"
+    )
+
+  # Cada arquivo válido vira:
+  # {
+  #   "nome_arquivo_sem_ext": [ { "threshold", "model": {...} }, ... ]
+  # }
+  | {
+      (input_filename | sub("(.+)/(?<itemname>.*?).json"; .itemname)): .model.entries?[]
+    }
+]
+
+############################################
+# 2) Achatar as entradas e descartar as que
+#    não tenham threshold ou (model.type != \"minecraft:model\").
+############################################
+| [ .[]                 # percorre array
+    | to_entries[]      # converte em { key, value }, ex. { key: \"bow\", value: {...} }
+    | .key as $itemname
+    | .value            # .value é um objeto, ex. { threshold:10, model:{...} }
+    | select(
+        (.threshold != null)
+        and (.model?.type? == "minecraft:model")
+        and (.model?.model? != null)
       )
-      # Em seguida, varremos recursivamente as demais
-      + find_entries(obj.entries)
-      + find_entries(obj.fallback)
-      + find_entries(obj.on_false)
-      + find_entries(obj.on_true)
-      + find_entries(obj.cases)
-    else
-      []
-    end
-  end
-;
-
-############################################
-# 2) Outras funções auxiliares
-############################################
-def maxdur($input):
-  ($item_mappings[] |
-    [ to_entries
-      | map(.key as $key | .value | .java_identifer = $key)
-      | .[] | select(.max_damage)
-    ]
-    | map({ (.java_identifer | split(":") | .[1]): (.max_damage) })
-    | add
-    | .[$input] // 1
-  );
-
-def bedrocktexture($input):
-  ($item_texture[] | .[$input] // {"icon": "camera", "frame": 0});
-
-def namespace:
-  if contains(":") then sub("\\:(.+)"; "") else "minecraft" end;
-
-
-############################################
-# 3) Extraímos todas as combinações
-#    (threshold, modelpath) de cada arquivo,
-#    e mapeamos em array de objetos
-############################################
-(
-  # Para cada arquivo JSON de ./assets/minecraft/items/*.json,
-  # produzimos um objeto:
-  # { "nome_do_arquivo_sem_ext": [ {threshold, modelpath}, ... ] }
-  [ inputs as $file
     | {
-        ($file
-         | input_filename
-         | sub("(.+)/(?<itemname>.*?).json"; .itemname)
-        ): find_entries($file.model)
+        "item": $itemname,
+        "bedrock_icon": (
+          $item_texture[]
+          | .[$itemname] // {"icon": "camera", "frame":0}
+        ),
+        "nbt": { "CustomModelData": .threshold },
+        "path": (
+          "./assets/"
+          + (.model.model | sub(\"\\:.+\"; \"\"))           # namespace
+          + "/models/"
+          + (.model.model | sub(\"(.*?)\\:\"; \"\"))       # caminho sem \"nome:\"
+          + ".json"
+        ),
+        "namespace": (
+          .model.model
+          | if contains(\":\") then sub(\"\\:(.+)\"; \"\") else \"minecraft\" end
+        ),
+        "model_path": (
+          (.model.model | sub(\"(.*?)\\:\"; \"\"))
+          | split(\"/\")[:-1]
+          | map(. + \"/\")
+          | add[:-1] // \"\"
+        ),
+        "model_name": (
+          (.model.model | sub(\"(.*?)\\:\"; \"\"))
+          | split(\"/\")[-1]
+        ),
+        "generated": false
       }
   ]
-  # Agora temos um array, cada elemento tem a forma:
-  # { "nome.json": [ {...}, {...} ] }
-  # Precisamos transformá-los num array de objetos planificado.
-  | .[]                          # para cada objeto do array
-  | to_entries[]                 # -> { "key":"nome.json", "value":[ {...}, {...} ] }
-  | .value as $pairs             # $pairs = [ {...}, {...} ]
-  | .key as $itemname            # itemname = 'bow', 'fishing_rod', etc.
-  | $pairs[]                     # itera cada par -> { threshold, modelpath }
-  | {
-      "item": $itemname,
-      "bedrock_icon": bedrocktexture($itemname),
-      "nbt": { "CustomModelData": .threshold },
-      "path": (
-        "./assets/"
-        + (.modelpath | namespace)
-        + "/models/"
-        + (.modelpath | sub("(.*?)\\:"; ""))
-        + ".json"
-      ),
-      "namespace": (.modelpath | namespace),
-      "model_path": (
-        (.modelpath | sub("(.*?)\\:"; ""))
-        | split("/")[:-1]
-        | map(. + "/")
-        | add[:-1]
-        // ""
-      ),
-      "model_name": (
-        (.modelpath | sub("(.*?)\\:"; ""))
-        | split("/")[-1]
-      ),
-      "generated": false
-    }
-)
-# Até aqui, geramos um fluxo de objetos, um por threshold+modelpath
 
-# Convertemos tudo em array
-| [ . ]
-
-# Removemos chaves nulas
+############################################
+# 3) Limpar nulos supérfluos e gerar geyserID
+############################################
 | walk(
     if type == "object" then
       with_entries(select(.value != null))
@@ -294,8 +252,6 @@ def namespace:
       .
     end
   )
-
-# Criamos a chave geyserID
 | to_entries
 | map(
     (
@@ -303,13 +259,12 @@ def namespace:
     )
     | .value
   )
-
-# Indexamos pelo geyserID
 | INDEX(.geyserID)
 ' ./assets/minecraft/items/*.json > config.json || {
   status_message error "Invalid JSON exists in block or item folder! See above log.";
   exit 1;
 }
+
 
 
 
