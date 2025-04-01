@@ -178,8 +178,8 @@ status_message process "Iterating through all vanilla associated model JSONs to 
 jq --slurpfile item_texture scratch_files/item_texture.json \
    --slurpfile item_mappings scratch_files/item_mappings.json -n '
 ############################################
-# 1) Função recursiva para encontrar todos os
-#    thresholds e seus respectivos caminhos de modelo
+# 1) find_entries - recursivo para varrer
+#    qualquer estrutura com .threshold + .model.model
 ############################################
 def find_entries(obj):
   if obj == null then
@@ -188,14 +188,16 @@ def find_entries(obj):
     if (obj | type) == "array" then
       reduce obj[] as $elem ([]; . + find_entries($elem))
     elif (obj | type) == "object" then
-      # Se o objeto possuir .threshold e .model.model,
-      # capturamos esse item.
-      (if (obj.threshold? != null and obj.model?.model? != null) then
-         [ { "threshold": obj.threshold, "modelpath": obj.model.model } ]
-       else
-         []
-       end)
-      # Em seguida, continuamos varrendo as demais propriedades
+      (
+        # Se o objeto tiver threshold e model.model,
+        # capturamos esse par {threshold, modelpath}
+        if (obj.threshold? != null and obj.model?.model? != null) then
+          [ { "threshold": obj.threshold, "modelpath": obj.model.model } ]
+        else
+          []
+        end
+      )
+      # Em seguida, varremos recursivamente as demais
       + find_entries(obj.entries)
       + find_entries(obj.fallback)
       + find_entries(obj.on_false)
@@ -208,13 +210,12 @@ def find_entries(obj):
 ;
 
 ############################################
-# 2) Demais funções para mapear
-#    texturas e namespaces
+# 2) Outras funções auxiliares
 ############################################
 def maxdur($input):
   ($item_mappings[] |
     [ to_entries
-      | map(.key as $key | .value | .java_identifer = $key )
+      | map(.key as $key | .value | .java_identifer = $key)
       | .[] | select(.max_damage)
     ]
     | map({ (.java_identifer | split(":") | .[1]): (.max_damage) })
@@ -228,51 +229,64 @@ def bedrocktexture($input):
 def namespace:
   if contains(":") then sub("\\:(.+)"; "") else "minecraft" end;
 
-############################################
-# 3) Extraímos os thresholds dos arquivos
-#    via find_entries(.model)
-############################################
-[
-  inputs
-  | {
-      (input_filename | sub("(.+)/(?<itemname>.*?).json"; .itemname)): find_entries(.model)
-    }
-]
-| [ .[]
-    | to_entries
-    | map(
-        .value.threshold as $threshold
-        | .value.modelpath as $m
-        | {
-          "item": .key,
-          "bedrock_icon": bedrocktexture(.key),
-          "nbt": { "CustomModelData": $threshold },
-          "path": (
-            "./assets/"
-            + ($m | namespace)
-            + "/models/"
-            + ($m | sub("(.*?)\\:"; ""))
-            + ".json"
-          ),
-          "namespace": ($m | namespace),
-          "model_path": (
-            ($m | sub("(.*?)\\:"; ""))
-            | split("/")[:-1]
-            | map(. + "/")
-            | add[:-1] // ""
-          ),
-          "model_name": (
-            ($m | sub("(.*?)\\:"; ""))
-            | split("/")[-1]
-          ),
-          "generated": false
-        }
-      )
-    | .[]
-  ]
-| flatten
 
-# Remove nulos supérfluos
+############################################
+# 3) Extraímos todas as combinações
+#    (threshold, modelpath) de cada arquivo,
+#    e mapeamos em array de objetos
+############################################
+(
+  # Para cada arquivo JSON de ./assets/minecraft/items/*.json,
+  # produzimos um objeto:
+  # { "nome_do_arquivo_sem_ext": [ {threshold, modelpath}, ... ] }
+  [ inputs as $file
+    | {
+        ($file
+         | input_filename
+         | sub("(.+)/(?<itemname>.*?).json"; .itemname)
+        ): find_entries($file.model)
+      }
+  ]
+  # Agora temos um array, cada elemento tem a forma:
+  # { "nome.json": [ {...}, {...} ] }
+  # Precisamos transformá-los num array de objetos planificado.
+  | .[]                          # para cada objeto do array
+  | to_entries[]                 # -> { "key":"nome.json", "value":[ {...}, {...} ] }
+  | .value as $pairs             # $pairs = [ {...}, {...} ]
+  | .key as $itemname            # itemname = 'bow', 'fishing_rod', etc.
+  | $pairs[]                     # itera cada par -> { threshold, modelpath }
+  | {
+      "item": $itemname,
+      "bedrock_icon": bedrocktexture($itemname),
+      "nbt": { "CustomModelData": .threshold },
+      "path": (
+        "./assets/"
+        + (.modelpath | namespace)
+        + "/models/"
+        + (.modelpath | sub("(.*?)\\:"; ""))
+        + ".json"
+      ),
+      "namespace": (.modelpath | namespace),
+      "model_path": (
+        (.modelpath | sub("(.*?)\\:"; ""))
+        | split("/")[:-1]
+        | map(. + "/")
+        | add[:-1]
+        // ""
+      ),
+      "model_name": (
+        (.modelpath | sub("(.*?)\\:"; ""))
+        | split("/")[-1]
+      ),
+      "generated": false
+    }
+)
+# Até aqui, geramos um fluxo de objetos, um por threshold+modelpath
+
+# Convertemos tudo em array
+| [ . ]
+
+# Removemos chaves nulas
 | walk(
     if type == "object" then
       with_entries(select(.value != null))
@@ -281,20 +295,22 @@ def namespace:
     end
   )
 
-# Transformamos em array enumerada, e depois
-# geramos geyserID conforme a posição
+# Criamos a chave geyserID
 | to_entries
 | map(
     (
-      .value.geyserID = ("gmdl_\\(1 + .key)")
+      .value.geyserID = "gmdl_\\(1 + .key)"
     )
     | .value
   )
+
+# Indexamos pelo geyserID
 | INDEX(.geyserID)
 ' ./assets/minecraft/items/*.json > config.json || {
   status_message error "Invalid JSON exists in block or item folder! See above log.";
   exit 1;
 }
+
 
 
 status_message completion "Initial predicate config generated"
