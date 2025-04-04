@@ -177,34 +177,20 @@ status_message process "Iterating through all vanilla associated model JSONs to 
 
 jq --slurpfile item_texture scratch_files/item_texture.json \
    --slurpfile item_mappings scratch_files/item_mappings.json -n '
-############################################
-# 1) Filtrar apenas arquivos no formato
-#    \"minecraft:range_dispatch\" com \"minecraft:custom_model_data\"
-############################################
 [
   inputs
   | select(
       .model?.type? == "minecraft:range_dispatch"
       and .model?.property? == "minecraft:custom_model_data"
     )
-
-  # Cada arquivo válido vira:
-  # {
-  #   "nome_arquivo_sem_ext": [ { "threshold", "model": {...} }, ... ]
-  # }
   | {
       (input_filename | sub("(.+)/(?<itemname>.*?).json"; .itemname)): .model.entries?[]
     }
 ]
-
-############################################
-# 2) Achatar as entradas e descartar as que
-#    não tenham threshold ou (model.type != \"minecraft:model\").
-############################################
-| [ .[]                 # percorre array
-    | to_entries[]      # converte em { key, value }, ex. { key: \"bow\", value: {...} }
+| [ .[]
+    | to_entries[]
     | .key as $itemname
-    | .value            # .value é um objeto, ex. { threshold:10, model:{...} }
+    | .value
     | select(
         (.threshold != null)
         and (.model?.type? == "minecraft:model")
@@ -214,42 +200,38 @@ jq --slurpfile item_texture scratch_files/item_texture.json \
         "item": $itemname,
         "bedrock_icon": (
           $item_texture[]
-          | .[$itemname] // {"icon": "camera", "frame":0}
+          | .[$itemname] // {"icon":"camera","frame":0}
         ),
         "nbt": { "CustomModelData": .threshold },
         "path": (
           "./assets/"
-          + (.model.model | sub(\"\\:.+\"; \"\"))           # namespace
+          + (.model.model | sub("\\:.+"; ""))
           + "/models/"
-          + (.model.model | sub(\"(.*?)\\:\"; \"\"))       # caminho sem \"nome:\"
+          + (.model.model | sub("(.*?)\\:"; ""))
           + ".json"
         ),
         "namespace": (
           .model.model
-          | if contains(\":\") then sub(\"\\:(.+)\"; \"\") else \"minecraft\" end
+          | if contains(":") then sub("\\:(.+)"; "") else "minecraft" end
         ),
         "model_path": (
-          (.model.model | sub(\"(.*?)\\:\"; \"\"))
-          | split(\"/\")[:-1]
-          | map(. + \"/\")
-          | add[:-1] // \"\"
+          (.model.model | sub("(.*?)\\:"; ""))
+          | split("/")[:-1]
+          | map(. + "/")
+          | add[:-1]
+          // ""
         ),
         "model_name": (
-          (.model.model | sub(\"(.*?)\\:\"; \"\"))
-          | split(\"/\")[-1]
+          (.model.model | sub("(.*?)\\:"; ""))
+          | split("/")[-1]
         ),
         "generated": false
       }
   ]
-
-############################################
-# 3) Limpar nulos supérfluos e gerar geyserID
-############################################
 | walk(
-    if type == "object" then
-      with_entries(select(.value != null))
-    else
-      .
+    if type == "object"
+    then with_entries(select(.value != null))
+    else .
     end
   )
 | to_entries
@@ -264,8 +246,6 @@ jq --slurpfile item_texture scratch_files/item_texture.json \
   status_message error "Invalid JSON exists in block or item folder! See above log.";
   exit 1;
 }
-
-
 
 
 status_message completion "Initial predicate config generated"
